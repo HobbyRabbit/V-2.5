@@ -5,7 +5,7 @@
   "documentation": "https://github.com/hunterjm/ac-infinity-hacs",
   "dependencies": ["bluetooth"],
   "requirements": ["bleak>=0.21.3"],
-  "codeowners": ["@yourgithubusername"],
+  "codeowners": ["@V2.2"],
   "config_flow": false,
   "iot_class": "local_push",
   "homeassistant": "2023.10.0"
