@@ -1,5 +1,5 @@
 import asyncio
-from homeassistant.components.bluetooth import BleakClient
+from bleak import BleakClient
 
 WRITE_UUID = "0000fff3-0000-1000-8000-00805f9b34fb"  # Hunter uses this
 
