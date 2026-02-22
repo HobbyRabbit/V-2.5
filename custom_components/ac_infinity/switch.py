@@ -1,54 +1,35 @@
-from __future__ import annotations
-import logging
-from typing import List
+from homeassistant.components.switch import SwitchEntity
 
-from homeassistant.components.sensor import SensorEntity
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.const import TEMP_CELSIUS, PERCENTAGE, REVOLUTIONS_PER_MINUTE
+from .const import DOMAIN, PORT_COUNT
 
-from .coordinator import ACInfinityDataUpdateCoordinator
-from .device import ACInfinityController
-from . import DOMAIN
 
-_LOGGER = logging.getLogger(__name__)
+async def async_setup_entry(hass, entry, async_add_entities):
+    coordinator = hass.data[DOMAIN][entry.entry_id]
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
-    """Set up AC Infinity sensors (RPM, temperature, humidity)."""
-    address = entry.data["address"]
-    data = hass.data[DOMAIN][address]
-    controller: ACInfinityController = data["controller"]
-    coordinator: ACInfinityDataUpdateCoordinator = data["coordinator"]
-
-    sensors: List[ACInfinitySensor] = [
-        ACInfinitySensor(controller, coordinator, "fan_rpm", "Fan RPM", REVOLUTIONS_PER_MINUTE),
-        ACInfinitySensor(controller, coordinator, "temperature", "Temperature", TEMP_CELSIUS),
-        ACInfinitySensor(controller, coordinator, "humidity", "Humidity", PERCENTAGE),
+    entities = [
+        ACInfinityPortSwitch(coordinator, port)
+        for port in range(1, PORT_COUNT + 1)
     ]
 
-    async_add_entities(sensors, True)
+    async_add_entities(entities)
 
 
-class ACInfinitySensor(SensorEntity):
-    """Representation of a single AC Infinity sensor."""
+class ACInfinityPortSwitch(SwitchEntity):
+    def __init__(self, coordinator, port):
+        self.coordinator = coordinator
+        self.port = port
 
-    def __init__(self, controller: ACInfinityController, coordinator: ACInfinityDataUpdateCoordinator, key: str, name: str, unit: str):
-        self._controller = controller
-        self._coordinator = coordinator
-        self._key = key
-        self._attr_name = f"{controller.address} {name}"
-        self._attr_unique_id = f"{controller.address}_{key}"
-        self._attr_native_unit_of_measurement = unit
-        self._state = None
+        self._attr_name = f"AC Infinity Port {port}"
+        self._attr_unique_id = f"ac_infinity_port_{port}"
 
     @property
-    def native_value(self):
-        """Return the current value."""
-        value = self._controller.state.get(self._key)
-        if isinstance(value, (int, float)):
-            return value
-        return None
+    def is_on(self):
+        return self.coordinator.get_port(self.port)
 
-    async def async_update(self):
-        """Fetch latest state from the controller."""
-        await self._coordinator.async_refresh_controller()
+    async def async_turn_on(self, **kwargs):
+        await self.coordinator.set_port(self.port, True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs):
+        await self.coordinator.set_port(self.port, False)
+        self.async_write_ha_state()
