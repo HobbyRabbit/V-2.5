@@ -3,8 +3,8 @@
   "name": "AC Infinity",
   "version": "2.4.0",
   "config_flow": true,
-  "iot_class": "local_polling",
-  "requirements": ["bleak>=0.22.0"],
+  "requirements": ["bleak>=0.22.0","bleak-retry-connector>=3.0.0"],
   "dependencies": ["bluetooth"],
   "codeowners": []
+  "iot_class": "local_push"
 }
