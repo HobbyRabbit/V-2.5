@@ -4,67 +4,91 @@ import asyncio
 import logging
 from datetime import timedelta
 
+from bleak import BleakClient, BleakError
+
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
-from homeassistant.core import HomeAssistant
+
+DOMAIN = "ac_infinity"
 
 _LOGGER = logging.getLogger(__name__)
 
+# Hunterjm-discovered primary service UUID (advertised FE61)
+AC_INFINITY_SERVICE_UUID = "0000fe61-0000-1000-8000-00805f9b34fb"
+
+# Polling interval (safe & slow while reverse engineering)
 SCAN_INTERVAL = timedelta(seconds=30)
 
 
-class ACInfinityCoordinator(DataUpdateCoordinator[dict]):
-    """AC Infinity BLE Coordinator"""
+class ACInfinityCoordinator(DataUpdateCoordinator):
+    """Coordinator for AC Infinity BLE devices."""
 
     def __init__(
         self,
         hass: HomeAssistant,
-        client,
+        name: str,
         address: str,
-        ports: int = 8,
     ) -> None:
-        self.hass = hass
-        self.client = client
-        self.address = address
-        self.ports = ports
-
+        """Initialize coordinator."""
         super().__init__(
             hass,
             _LOGGER,
-            name=f"AC Infinity {address}",
+            name=name,
             update_interval=SCAN_INTERVAL,
         )
 
-    async def _async_update_data(self) -> dict:
-        """Fetch data from the AC Infinity device"""
+        self.address = address
+        self.client: BleakClient | None = None
+
+    async def _ensure_connected(self) -> None:
+        """Ensure BLE client is connected."""
+        if self.client and self.client.is_connected:
+            return
+
+        _LOGGER.debug("Connecting to AC Infinity device at %s", self.address)
 
         try:
-            # --- CONNECT IF NEEDED ---
+            self.client = BleakClient(self.address)
+            await self.client.connect(timeout=15.0)
+
             if not self.client.is_connected:
-                _LOGGER.debug("Connecting to AC Infinity %s", self.address)
-                await self.client.connect()
+                raise BleakError("BLE connection failed")
 
-            # --- BUILD STATE DICT ---
-            data: dict = {
-                "online": True,
-                "ports": {},
-            }
-
-            # --- PLACEHOLDER PORT STATE ---
-            # We do NOT yet know the real readback format.
-            # This keeps HA stable while we reverse packets.
-            for port in range(1, self.ports + 1):
-                data["ports"][port] = {
-                    "state": None,   # unknown yet
-                    "speed": None,   # fans use this, outlets ignore
-                }
-
-            return data
+            _LOGGER.info(
+                "Connected to AC Infinity device %s",
+                self.address,
+            )
 
         except Exception as err:
-            _LOGGER.exception(
-                "Unexpected error fetching AC Infinity %s data", self.address
+            self.client = None
+            raise UpdateFailed(f"BLE connect failed: {err}") from err
+
+    async def _async_update_data(self) -> dict:
+        """Fetch data from device (minimal, safe stub)."""
+
+        try:
+            await self._ensure_connected()
+
+            # 🔎 For now we return connection status only
+            # Real GATT parsing comes next
+            return {
+                "connected": True,
+                "address": self.address,
+            }
+
+        except Exception as err:
+            _LOGGER.error(
+                "Unexpected error fetching AC Infinity %s data",
+                self.name,
+                exc_info=True,
             )
             raise UpdateFailed(err) from err
+
+    async def async_shutdown(self) -> None:
+        """Disconnect BLE on shutdown."""
+        if self.client and self.client.is_connected:
+            await self.client.disconnect()
+            _LOGGER.debug("Disconnected BLE device %s", self.address)
