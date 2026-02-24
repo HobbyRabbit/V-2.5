@@ -3,74 +3,82 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from bleak import BleakClient
 from bleak_retry_connector import establish_connection
+from bleak import BleakClient
 
-from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
-from homeassistant.components.bluetooth import async_get_scanner
 
-DOMAIN = "ac_infinity"
+from .const import UPDATE_INTERVAL, CHAR_UUID
+
 _LOGGER = logging.getLogger(__name__)
 
-SCAN_INTERVAL = timedelta(seconds=60)
+PORTS = 8
 
 
 class ACInfinityCoordinator(DataUpdateCoordinator):
-    """Coordinator for AC Infinity BLE device."""
+    def __init__(self, hass, mac: str):
+        self.mac = mac
+        self.client: BleakClient | None = None
 
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        address: str,
-    ) -> None:
+        self._power = [False] * PORTS
+        self._speed = [0] * PORTS
+
         super().__init__(
             hass,
             _LOGGER,
-            name=f"AC Infinity {address}",
-            update_interval=SCAN_INTERVAL,
+            name=f"AC Infinity {mac}",
+            update_interval=timedelta(seconds=UPDATE_INTERVAL),
         )
 
-        self.hass = hass
-        self.address = address
-        self.client: BleakClient | None = None
-
-    async def _ensure_connected(self) -> None:
-        """Ensure BLE connection using HA-safe retry connector."""
-
+    async def _ensure_connected(self):
         if self.client and self.client.is_connected:
             return
-
-        _LOGGER.debug("Establishing BLE connection to %s", self.address)
 
         try:
             self.client = await establish_connection(
                 BleakClient,
-                self.address,
-                name=f"ac_infinity_{self.address}",
-                scanner=async_get_scanner(self.hass),
+                self.mac,
+                name="ACInfinity",
             )
-
-            _LOGGER.info("Connected to AC Infinity device %s", self.address)
-
         except Exception as err:
-            self.client = None
-            raise UpdateFailed(f"BLE connection failed: {err}") from err
+            raise UpdateFailed(f"BLE connect failed: {err}") from err
 
-    async def _async_update_data(self) -> dict:
-        """Minimal poll — proves BLE connection works."""
+    # ---------- packet helpers ----------
 
+    def _build_payload(self):
+        p = [1 if x else 0 for x in self._power]
+        s = self._speed
+        return bytes(p + s)
+
+    # ---------- polling ----------
+
+    async def _async_update_data(self):
         await self._ensure_connected()
 
-        return {
-            "connected": True,
-            "address": self.address,
-        }
+        try:
+            data = await self.client.read_gatt_char(CHAR_UUID)
 
-    async def async_shutdown(self) -> None:
-        if self.client and self.client.is_connected:
-            await self.client.disconnect()
-            _LOGGER.debug("Disconnected BLE device %s", self.address)
+            for i in range(PORTS):
+                self._power[i] = bool(data[i])
+                self._speed[i] = int(data[i + PORTS])
+
+            return {
+                "power": self._power,
+                "speed": self._speed,
+            }
+
+        except Exception as err:
+            raise UpdateFailed(str(err)) from err
+
+    # ---------- commands ----------
+
+    async def set_power(self, index: int, state: bool):
+        self._power[index] = state
+        await self.client.write_gatt_char(CHAR_UUID, self._build_payload())
+
+    async def set_speed(self, index: int, speed: int):
+        self._speed[index] = speed
+        await self.client.write_gatt_char(CHAR_UUID, self._build_payload())
