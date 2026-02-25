@@ -3,34 +3,45 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 
-PORTS = 8
-
 
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
 
     entities = [
-        ACInfinityPortSwitch(coordinator, i)
-        for i in range(PORTS)
+        ACInfinityPortSwitch(coordinator, port)
+        for port in range(1, 9)
     ]
 
     async_add_entities(entities)
 
 
 class ACInfinityPortSwitch(CoordinatorEntity, SwitchEntity):
-    def __init__(self, coordinator, index):
+    """One outlet port switch."""
+
+    def __init__(self, coordinator, port: int):
         super().__init__(coordinator)
-        self.index = index
-        self._attr_name = f"AC Infinity Port {index+1} Power"
+
+        self._port = port
+        self._attr_name = f"AC Infinity Port {port}"
+        self._attr_unique_id = f"{coordinator.mac}_port_{port}"
+        self._attr_has_entity_name = True
+
+    # -----------------------
+    # STATE
+    # -----------------------
 
     @property
     def is_on(self):
-        return self.coordinator.data["power"][self.index]
+        return self.coordinator.data.get(self._port, False)
 
-    async def async_turn_on(self):
-        await self.coordinator.set_power(self.index, True)
+    # -----------------------
+    # COMMANDS
+    # -----------------------
+
+    async def async_turn_on(self, **kwargs):
+        await self.coordinator.set_port(self._port, True)
         await self.coordinator.async_request_refresh()
 
-    async def async_turn_off(self):
-        await self.coordinator.set_power(self.index, False)
+    async def async_turn_off(self, **kwargs):
+        await self.coordinator.set_port(self._port, False)
         await self.coordinator.async_request_refresh()
