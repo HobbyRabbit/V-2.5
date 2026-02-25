@@ -1,84 +1,145 @@
+# /config/custom_components/ac_infinity/coordinator.py
+
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import timedelta
 
-from bleak_retry_connector import establish_connection
 from bleak import BleakClient
+from bleak_retry_connector import establish_connection
 
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
 
-from .const import UPDATE_INTERVAL, CHAR_UUID
-
 _LOGGER = logging.getLogger(__name__)
 
-PORTS = 8
+SERVICE_UUID = "0000fe61-0000-1000-8000-00805f9b34fb"
 
 
 class ACInfinityCoordinator(DataUpdateCoordinator):
+    """AC Infinity BLE coordinator with auto characteristic discovery."""
+
     def __init__(self, hass, mac: str):
-        self.mac = mac
-        self.client: BleakClient | None = None
-
-        self._power = [False] * PORTS
-        self._speed = [0] * PORTS
-
         super().__init__(
             hass,
             _LOGGER,
-            name=f"AC Infinity {mac}",
-            update_interval=timedelta(seconds=UPDATE_INTERVAL),
+            name="AC Infinity",
+            update_interval=None,
         )
 
+        self.mac = mac
+        self.client: BleakClient | None = None
+        self._write_char = None
+        self._notify_char = None
+        self._notify_event = asyncio.Event()
+        self._last_payload: bytes | None = None
+
+        # 8 ports default
+        self.ports = {i: False for i in range(1, 9)}
+
+    # -------------------------------------------------------
+    # CONNECTION
+    # -------------------------------------------------------
+
     async def _ensure_connected(self):
+        """Connect + auto discover chars."""
+
         if self.client and self.client.is_connected:
             return
 
-        try:
-            self.client = await establish_connection(
-                BleakClient,
-                self.mac,
-                name="ACInfinity",
-            )
-        except Exception as err:
-            raise UpdateFailed(f"BLE connect failed: {err}") from err
+        self.client = await establish_connection(
+            BleakClient,
+            self.mac,
+            name="ACInfinity",
+        )
 
-    # ---------- packet helpers ----------
+        services = await self.client.get_services()
 
-    def _build_payload(self):
-        p = [1 if x else 0 for x in self._power]
-        s = self._speed
-        return bytes(p + s)
+        service = services.get_service(SERVICE_UUID)
+        if not service:
+            raise UpdateFailed("FE61 service not found")
 
-    # ---------- polling ----------
+        for char in service.characteristics:
+            props = char.properties
 
-    async def _async_update_data(self):
+            if not self._write_char and (
+                "write" in props or "write-without-response" in props
+            ):
+                self._write_char = char
+
+            if not self._notify_char and "notify" in props:
+                self._notify_char = char
+
+        if not self._write_char or not self._notify_char:
+            raise UpdateFailed("write/notify characteristics not found")
+
+        await self.client.start_notify(self._notify_char, self._notification)
+
+        _LOGGER.debug(
+            "Auto discovered chars write=%s notify=%s",
+            self._write_char.uuid,
+            self._notify_char.uuid,
+        )
+
+    # -------------------------------------------------------
+    # NOTIFY
+    # -------------------------------------------------------
+
+    def _notification(self, _, data: bytearray):
+        self._last_payload = bytes(data)
+        self._notify_event.set()
+
+    # -------------------------------------------------------
+    # LOW LEVEL SEND
+    # -------------------------------------------------------
+
+    async def _send(self, payload: bytes, wait_reply=True):
         await self._ensure_connected()
 
-        try:
-            data = await self.client.read_gatt_char(CHAR_UUID)
+        self._notify_event.clear()
 
-            for i in range(PORTS):
-                self._power[i] = bool(data[i])
-                self._speed[i] = int(data[i + PORTS])
+        await self.client.write_gatt_char(
+            self._write_char,
+            payload,
+            response=False,
+        )
 
-            return {
-                "power": self._power,
-                "speed": self._speed,
-            }
+        if wait_reply:
+            try:
+                await asyncio.wait_for(self._notify_event.wait(), 3)
+            except asyncio.TimeoutError:
+                raise UpdateFailed("No BLE reply")
 
-        except Exception as err:
-            raise UpdateFailed(str(err)) from err
+            return self._last_payload
 
-    # ---------- commands ----------
+    # -------------------------------------------------------
+    # PUBLIC API
+    # -------------------------------------------------------
 
-    async def set_power(self, index: int, state: bool):
-        self._power[index] = state
-        await self.client.write_gatt_char(CHAR_UUID, self._build_payload())
+    async def set_port(self, port: int, state: bool):
+        """
+        hunterjm compatible packet:
+        [AA 55][port][01/00][checksum]
+        """
 
-    async def set_speed(self, index: int, speed: int):
-        self._speed[index] = speed
-        await self.client.write_gatt_char(CHAR_UUID, self._build_payload())
+        cmd = 0x01 if state else 0x00
+
+        packet = bytearray([0xAA, 0x55, port, cmd])
+        packet.append(sum(packet) & 0xFF)
+
+        await self._send(packet)
+
+        self.ports[port] = state
+
+    async def toggle_port(self, port: int):
+        await self.set_port(port, not self.ports[port])
+
+    # -------------------------------------------------------
+    # HA UPDATE
+    # -------------------------------------------------------
+
+    async def _async_update_data(self):
+        """HA just needs state."""
+        return self.ports
