@@ -46,7 +46,7 @@ NOTIFY_UUID  = "0000fe63-0000-1000-8000-00805f9b34fb"
 
 class ACInfinityCoordinator(DataUpdateCoordinator):
 
-    def __init__(self, hass: HomeAssistant, mac: str, name: str):
+    def __init__(self, hass, address: str, name: str):
         super().__init__(
             hass,
             _LOGGER,
