@@ -5,6 +5,7 @@ from homeassistant.core import HomeAssistant
 
 from .coordinator import ACInfinityCoordinator
 
+DOMAIN = "ac_infinity"
 PLATFORMS = ["switch", "fan"]
 
 
@@ -13,18 +14,18 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    mac = entry.data["mac"]
-    name = entry.title  # <- REQUIRED
+    address = entry.data["address"]   # ← FIXED
+    name = entry.title
 
     coordinator = ACInfinityCoordinator(
         hass,
-        mac,
-        name,   # ← THIS WAS MISSING
+        address,   # pass address instead of mac
+        name,
     )
 
     await coordinator.async_config_entry_first_refresh()
 
-    hass.data.setdefault("ac_infinity", {})[entry.entry_id] = coordinator
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -35,6 +36,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
-        hass.data["ac_infinity"].pop(entry.entry_id)
+        hass.data[DOMAIN].pop(entry.entry_id)
 
     return unload_ok
