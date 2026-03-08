@@ -1,4 +1,3 @@
-"""The ac_infinity sensor platform."""
 from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity
@@ -9,6 +8,7 @@ from . import DOMAIN
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
+
     coordinator: ACInfinityCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     entities = [
@@ -20,8 +20,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class ACInfinityTemperatureSensor(CoordinatorEntity, SensorEntity):
+
     _attr_name = "AC Infinity Temperature"
     _attr_native_unit_of_measurement = "°C"
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
 
     @property
     def native_value(self):
@@ -29,8 +33,12 @@ class ACInfinityTemperatureSensor(CoordinatorEntity, SensorEntity):
 
 
 class ACInfinityHumiditySensor(CoordinatorEntity, SensorEntity):
+
     _attr_name = "AC Infinity Humidity"
     _attr_native_unit_of_measurement = "%"
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
 
     @property
     def native_value(self):
