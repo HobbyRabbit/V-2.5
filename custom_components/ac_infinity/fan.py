@@ -83,4 +83,4 @@ class ACInfinityPortFan(CoordinatorEntity, FanEntity):
         await self.coordinator.async_set_power(self._port, False)
 
     async def async_set_percentage(self, percentage: int):
-        await self.coordinator.async_set_speed(self._port, percentage)
+        await self.coordinator.set_port_speed(self._port, percentage)
