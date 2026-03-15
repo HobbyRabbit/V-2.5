@@ -1,33 +1,24 @@
-"""AC Infinity BLE Coordinator."""
-
 from __future__ import annotations
 
 import logging
 from datetime import timedelta
 
 from bleak import BleakClient
-
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
 
-from .const import DOMAIN
-
 _LOGGER = logging.getLogger(__name__)
 
-UPDATE_INTERVAL = timedelta(seconds=10)
-
-# BLE UUIDs
-SERVICE_UUID = "0000fff0-0000-1000-8000-00805f9b34fb"
-NOTIFY_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"
+UPDATE_INTERVAL = timedelta(seconds=5)
+PORT_COUNT = 8
 
 
 class ACInfinityCoordinator(DataUpdateCoordinator):
-    """Coordinator for AC Infinity controller."""
+    """AC Infinity BLE coordinator."""
 
-    def __init__(self, hass, mac: str, name: str):
-        """Initialize."""
+    def __init__(self, hass, address: str, name: str):
         super().__init__(
             hass,
             _LOGGER,
@@ -35,73 +26,87 @@ class ACInfinityCoordinator(DataUpdateCoordinator):
             update_interval=UPDATE_INTERVAL,
         )
 
-        self.mac = mac
+        self.address = address  # ✅ FIX (was mac)
         self.name = name
-        self.client = BleakClient(mac)
+        self.client: BleakClient | None = None
 
-        # Data store
+        # Safe defaults (prevents KeyError + min/max issues)
         self.data = {
-            "temperature": None,
-            "humidity": None,
-            "ports": {i: False for i in range(1, 9)},
+            "temperature": 0.0,
+            "humidity": 0.0,
+            "ports": {
+                i: {
+                    "power": False,
+                    "speed": 0,
+                }
+                for i in range(1, PORT_COUNT + 1)
+            },
         }
 
-    async def _ensure_connected(self):
-        """Ensure BLE connection."""
-        if not self.client.is_connected:
-            _LOGGER.debug("Connecting to AC Infinity %s", self.mac)
-            await self.client.connect()
+    # --------------------------------------------------
+    # BLE
+    # --------------------------------------------------
 
-            await self.client.start_notify(
-                NOTIFY_UUID,
-                self._handle_notification,
-            )
+    async def _ensure_connected(self):
+        if self.client and self.client.is_connected:
+            return
+
+        try:
+            self.client = BleakClient(self.address)
+            await self.client.connect()
+        except Exception as err:
+            raise UpdateFailed(f"BLE connect failed: {err}") from err
+
+    # --------------------------------------------------
+    # Poll
+    # --------------------------------------------------
 
     async def _async_update_data(self):
-        """Fetch data from device."""
+        """Fetch latest device state."""
+
+        await self._ensure_connected()
+
         try:
-            await self._ensure_connected()
+            # TODO:
+            # Replace with real read command when packet decoded.
+            # For now we keep safe defaults so HA doesn't crash.
             return self.data
 
         except Exception as err:
-            raise UpdateFailed(f"BLE error: {err}") from err
+            raise UpdateFailed(str(err)) from err
 
-    def _handle_notification(self, sender: int, data: bytearray):
-        """Handle BLE notification packets."""
-        try:
+    # --------------------------------------------------
+    # Controls
+    # --------------------------------------------------
 
-            if len(data) < 16:
-                return
+    async def set_port_power(self, port: int, on: bool):
+        """Toggle outlet/fan."""
+        await self._ensure_connected()
 
-            # Validate packet header
-            if data[0:5] != b"JGQUA":
-                return
+        cmd = bytearray([0xA5, port, 0x01 if on else 0x00])
 
-            # ---- Temperature decode
-            temp_raw = (data[9] << 8) | data[10]
-            temperature = round(temp_raw / 36, 1)
+        await self.client.write_gatt_char(
+            "0000fff2-0000-1000-8000-00805f9b34fb",
+            cmd,
+            response=True,
+        )
 
-            # ---- Humidity decode
-            humidity_raw = data[11]
-            humidity = int(humidity_raw / 3)
+        self.data["ports"][port]["power"] = on
+        await self.async_request_refresh()
 
-            self.data["temperature"] = temperature
-            self.data["humidity"] = humidity
+    async def set_port_speed(self, port: int, percent: int):
+        """Set fan speed (0-100%)."""
+        await self._ensure_connected()
 
-            # ---- Port state decode
-            port = data[13]
-            state = data[15]
+        percent = max(0, min(100, percent))
 
-            if 1 <= port <= 8:
-                self.data["ports"][port] = bool(state)
+        cmd = bytearray([0xA6, port, percent])
 
-            _LOGGER.debug(
-                "AC Infinity packet decoded | Temp=%sF Humidity=%s%% Port=%s State=%s",
-                temperature,
-                humidity,
-                port,
-                state,
-            )
+        await self.client.write_gatt_char(
+            "0000fff2-0000-1000-8000-00805f9b34fb",
+            cmd,
+            response=True,
+        )
 
-        except Exception as err:
-            _LOGGER.error("AC Infinity packet parse error: %s", err)
+        self.data["ports"][port]["speed"] = percent
+        await self.async_request_refresh()
